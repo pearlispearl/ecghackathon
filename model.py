@@ -6,7 +6,7 @@ from torchvision import models
 
 class ECGResNet(nn.Module):
     """
-    ResNet50 fine-tuned for 5-class CAC score classification from ECG PNG images.
+    ResNet152 fine-tuned for 5-class CAC score classification from ECG PNG images.
  
     Strategy:
         - Freeze early ResNet layers (layers 1-3) to preserve ImageNet features
@@ -16,7 +16,7 @@ class ECGResNet(nn.Module):
     def __init__(self, num_classes=5, dropout=0.5):
         super().__init__()
  
-        resnet = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
+        resnet = models.resnet152(weights=models.ResNet152_Weights.DEFAULT)
  
         # Freeze everything except layer4
         for name, param in resnet.named_parameters():
@@ -40,9 +40,8 @@ class ECGResNet(nn.Module):
         )
  
     def _get_name(self):
-        return "ECGResNet50"
+        return "ECGResNet152"
  
     def forward(self, x):
         features = self.backbone(x)        
-        return self.classifier(features) 
- 
+        return self.classifier(features)
