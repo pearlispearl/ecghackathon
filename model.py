@@ -18,9 +18,9 @@ class ECGResNet(nn.Module):
  
         resnet = models.resnet152(weights=models.ResNet152_Weights.DEFAULT)
  
-        # Freeze everything except layer4
+        # Freeze early layers; fine-tune layer3 + layer4 + classifier
         for name, param in resnet.named_parameters():
-            if not (name.startswith("layer4") or name.startswith("fc")):
+            if not (name.startswith("layer3") or name.startswith("layer4") or name.startswith("fc")):
                 param.requires_grad = False
  
         in_features = resnet.fc.in_features  # 2048
