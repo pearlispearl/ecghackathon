@@ -2,18 +2,21 @@ import torch
 
 
 def train_one_epoch(
-        dataloader, model, loss_fn,
-        optimizer, epoch,
-        device, writer=None,
-        fold_idx=None,
-        log_step_interval=50):
+    dataloader,
+    model,
+    loss_fn,
+    optimizer,
+    epoch,
+    device,
+    writer=None,
+    fold_idx=None,
+    log_step_interval=50
+):
     size = len(dataloader.dataset)
     model.train()
-
     running_loss = 0.0
 
-    for i, batch in enumerate(dataloader):
-        X, y = batch
+    for i, (X, y) in enumerate(dataloader):
         X, y = X.to(device), y.to(device)
 
         optimizer.zero_grad()
@@ -41,13 +44,11 @@ def evaluate(dataloader, model, loss_fn, device, return_logits=False):
     model.eval()
 
     loss = 0.0
-    y_preds, y_trues = [], []
-    logits_list = []
+    y_preds, y_trues, logits_list = [], [], []
 
     with torch.no_grad():
         for X, y in dataloader:
             X, y = X.to(device), y.to(device)
-
             pred = model(X)
             y_pred = pred.argmax(1)
 

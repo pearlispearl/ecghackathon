@@ -2,6 +2,7 @@ import json
 import os
 import random
 from datetime import datetime
+from collections import Counter
 
 import numpy as np
 import pandas as pd
@@ -13,19 +14,13 @@ from torch import nn
 from torch.utils.data import DataLoader, Subset
 from torch.utils.tensorboard import SummaryWriter
 import torchvision.transforms.v2 as transforms_v2
-from torcheval.metrics.functional import (
-    multiclass_accuracy,
-    multiclass_f1_score,
-)
+from torcheval.metrics.functional import multiclass_accuracy, multiclass_f1_score
 
 from ecg_image_dataset import ECGImageDataset
 from dl_utils import train_one_epoch, evaluate
 from model import ECGEfficientNet
 
 
-# =========================
-# Reproducibility
-# =========================
 def set_seed(seed=42):
     random.seed(seed)
     np.random.seed(seed)
@@ -33,12 +28,6 @@ def set_seed(seed=42):
     torch.cuda.manual_seed_all(seed)
 
 
-set_seed(42)
-
-
-# =========================
-# Utility functions
-# =========================
 def safe_multiclass_auc(y_true, probs, num_classes=5):
     y_true_np = y_true.detach().cpu().numpy()
     probs_np = probs.detach().cpu().numpy()
@@ -48,14 +37,15 @@ def safe_multiclass_auc(y_true, probs, num_classes=5):
         return float("nan")
 
     try:
-        auc = roc_auc_score(
-            y_true_np,
-            probs_np,
-            multi_class="ovr",
-            average="macro",
-            labels=list(range(num_classes))
+        return float(
+            roc_auc_score(
+                y_true_np,
+                probs_np,
+                multi_class="ovr",
+                average="macro",
+                labels=list(range(num_classes))
+            )
         )
-        return float(auc)
     except ValueError:
         return float("nan")
 
@@ -79,12 +69,7 @@ def apply_class_thresholds(probs, thresholds):
     return preds
 
 
-def find_best_thresholds_from_logits(
-    logits,
-    y_true,
-    num_classes=5,
-    metric_average="macro"
-):
+def find_best_thresholds_from_logits(logits, y_true, num_classes=5, metric_average="macro"):
     probs = torch.softmax(logits, dim=1).cpu()
     y_true = y_true.cpu()
 
@@ -93,10 +78,7 @@ def find_best_thresholds_from_logits(
 
     best_preds = apply_class_thresholds(probs, thresholds)
     best_f1 = multiclass_f1_score(
-        best_preds,
-        y_true,
-        num_classes=num_classes,
-        average=metric_average
+        best_preds, y_true, num_classes=num_classes, average=metric_average
     ).item()
 
     improved = True
@@ -117,10 +99,7 @@ def find_best_thresholds_from_logits(
 
                 trial_preds = apply_class_thresholds(probs, trial_thresholds)
                 trial_f1 = multiclass_f1_score(
-                    trial_preds,
-                    y_true,
-                    num_classes=num_classes,
-                    average=metric_average
+                    trial_preds, y_true, num_classes=num_classes, average=metric_average
                 ).item()
 
                 if trial_f1 > local_best_f1:
@@ -134,10 +113,7 @@ def find_best_thresholds_from_logits(
 
     final_preds = apply_class_thresholds(probs, thresholds)
     final_f1 = multiclass_f1_score(
-        final_preds,
-        y_true,
-        num_classes=num_classes,
-        average=metric_average
+        final_preds, y_true, num_classes=num_classes, average=metric_average
     ).item()
 
     return thresholds, final_preds, final_f1
@@ -157,14 +133,15 @@ def summarize_metric(values):
 
 
 # =========================
-# Hyperparameters
+# Config
 # =========================
+set_seed(42)
+
 learning_rate = 5e-5
 batch_size = 16
 epochs = 100
 num_classes = 5
 num_folds = 5
-
 patience = 10
 min_delta = 1e-4
 
@@ -172,9 +149,18 @@ csv_file_path1 = "data/patient_info_dataset.csv"
 csv_file_path2 = "data/patient_info_dataset2.csv"
 image_dir_path = "data/ECG Signal Image"
 
+if torch.backends.mps.is_available():
+    device = torch.device("mps")
+elif torch.cuda.is_available():
+    device = torch.device("cuda")
+else:
+    device = torch.device("cpu")
+
+print(f"Using device: {device}")
+
 
 # =========================
-# Dataset
+# Transforms
 # =========================
 train_transform = transforms_v2.Compose([
     transforms_v2.ToImage(),
@@ -198,45 +184,36 @@ eval_transform = transforms_v2.Compose([
     )
 ])
 
+
+# =========================
+# Load dataset
+# =========================
 df1 = pd.read_csv(csv_file_path1)
 df2 = pd.read_csv(csv_file_path2)
 df_full = pd.concat([df1, df2], ignore_index=True)
 
-full_dataset_for_labels = ECGImageDataset(df_full, image_dir_path, transform=eval_transform)
-labels = full_dataset_for_labels.df["label"].values
-print("Label counts:")
-print(full_dataset_for_labels.df["label"].value_counts().sort_index())
+dataset_for_labels = ECGImageDataset(df_full, image_dir_path, transform=eval_transform)
+labels = dataset_for_labels.df["label"].values
 
-# separate datasets so train/valid can use different transforms
+print("Overall label counts:")
+print(dataset_for_labels.df["label"].value_counts().sort_index())
+
 train_dataset_full = ECGImageDataset(df_full, image_dir_path, transform=train_transform)
 eval_dataset_full = ECGImageDataset(df_full, image_dir_path, transform=eval_transform)
 
-assert len(train_dataset_full) == len(eval_dataset_full) == len(labels), "Dataset size mismatch"
-
-
-# =========================
-# Device
-# =========================
-if torch.backends.mps.is_available():
-    device = torch.device("mps")
-elif torch.cuda.is_available():
-    device = torch.device("cuda")
-else:
-    device = torch.device("cpu")
-
-print(f"Using device: {device}")
+assert len(train_dataset_full) == len(eval_dataset_full) == len(labels)
 
 
 # =========================
 # TensorBoard
 # =========================
 writer = SummaryWriter(
-    f'./runs/ECG_CAC_EfficientNetB0_KFold_{datetime.now().strftime("%Y%m%d-%H%M%S")}'
+    f'./runs/ECG_CAC_EfficientNetB0_StratifiedKFold_{datetime.now().strftime("%Y%m%d-%H%M%S")}'
 )
 
 
 # =========================
-# K-Fold Training
+# Stratified K-Fold
 # =========================
 skf = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=42)
 
@@ -247,7 +224,13 @@ best_fold_thresholds = None
 best_model_path = None
 
 for fold_idx, (train_idx, valid_idx) in enumerate(skf.split(np.arange(len(labels)), labels), start=1):
-    print(f"\n{'=' * 20} FOLD {fold_idx}/{num_folds} {'=' * 20}")
+    print(f"\n{'=' * 25} FOLD {fold_idx}/{num_folds} {'=' * 25}")
+
+    train_labels = labels[train_idx]
+    valid_labels = labels[valid_idx]
+
+    print("Train distribution:", dict(sorted(Counter(train_labels).items())))
+    print("Valid distribution:", dict(sorted(Counter(valid_labels).items())))
 
     train_ds = Subset(train_dataset_full, train_idx)
     valid_ds = Subset(eval_dataset_full, valid_idx)
@@ -258,13 +241,11 @@ for fold_idx, (train_idx, valid_idx) in enumerate(skf.split(np.arange(len(labels
     model = ECGEfficientNet(num_classes=num_classes).to(device)
     print(model)
 
-    fold_train_labels = labels[train_idx]
-    class_weights = compute_class_weights_from_labels(fold_train_labels, num_classes=num_classes).to(device)
-    print(f"Fold {fold_idx} class weights: {class_weights.tolist()}")
+    class_weights = compute_class_weights_from_labels(train_labels, num_classes=num_classes).to(device)
+    print(f"Class weights: {class_weights.tolist()}")
 
     loss_fn = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.05)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
         mode="max",
@@ -277,12 +258,10 @@ for fold_idx, (train_idx, valid_idx) in enumerate(skf.split(np.arange(len(labels
     early_stop_counter = 0
 
     fold_model_path = f"model_fold{fold_idx}_best_f1_threshold.pth"
-    fold_thresholds_pt_path = f"best_thresholds_fold{fold_idx}.pt"
-    fold_thresholds_json_path = f"best_thresholds_fold{fold_idx}.json"
+    fold_threshold_path = f"best_thresholds_fold{fold_idx}.pt"
 
     for epoch in range(epochs):
         print(f"\nFold {fold_idx} - Epoch {epoch + 1}/{epochs}")
-
         current_lr = optimizer.param_groups[0]["lr"]
         print(f"Current LR: {current_lr:.8f}")
 
@@ -296,30 +275,22 @@ for fold_idx, (train_idx, valid_idx) in enumerate(skf.split(np.arange(len(labels
         )
         train_probs = torch.softmax(train_logits, dim=1)
 
-        train_acc = multiclass_accuracy(
-            train_y_preds, train_y_trues, num_classes=num_classes
-        ).item()
+        train_acc = multiclass_accuracy(train_y_preds, train_y_trues, num_classes=num_classes).item()
         train_f1 = multiclass_f1_score(
             train_y_preds, train_y_trues, num_classes=num_classes, average="macro"
         ).item()
-        train_auc = safe_multiclass_auc(
-            train_y_trues, train_probs, num_classes=num_classes
-        )
+        train_auc = safe_multiclass_auc(train_y_trues, train_probs, num_classes=num_classes)
 
         val_loss, val_y_preds, val_y_trues, val_logits = evaluate(
             valid_dl, model, loss_fn, device, return_logits=True
         )
         val_probs = torch.softmax(val_logits, dim=1)
 
-        val_acc_argmax = multiclass_accuracy(
-            val_y_preds, val_y_trues, num_classes=num_classes
-        ).item()
+        val_acc_argmax = multiclass_accuracy(val_y_preds, val_y_trues, num_classes=num_classes).item()
         val_f1_argmax = multiclass_f1_score(
             val_y_preds, val_y_trues, num_classes=num_classes, average="macro"
         ).item()
-        val_auc = safe_multiclass_auc(
-            val_y_trues, val_probs, num_classes=num_classes
-        )
+        val_auc = safe_multiclass_auc(val_y_trues, val_probs, num_classes=num_classes)
 
         threshold_tensor, val_y_preds_thresholded, val_f1_thresholded = find_best_thresholds_from_logits(
             val_logits, val_y_trues, num_classes=num_classes, metric_average="macro"
@@ -329,27 +300,20 @@ for fold_idx, (train_idx, valid_idx) in enumerate(skf.split(np.arange(len(labels
             val_y_preds_thresholded, val_y_trues, num_classes=num_classes
         ).item()
 
-        # AUC depends on probabilities, not thresholds
-        val_auc_thresholded = val_auc
-
         writer.add_scalar(f"Fold_{fold_idx}/Loss/train", train_loss, epoch)
         writer.add_scalar(f"Fold_{fold_idx}/Loss/valid", val_loss, epoch)
-
-        writer.add_scalar(f"Fold_{fold_idx}/Accuracy/train", train_acc, epoch)
-        writer.add_scalar(f"Fold_{fold_idx}/Accuracy/valid_argmax", val_acc_argmax, epoch)
-        writer.add_scalar(f"Fold_{fold_idx}/Accuracy/valid_thresholded", val_acc_thresholded, epoch)
-
+        writer.add_scalar(f"Fold_{fold_idx}/ACC/train", train_acc, epoch)
+        writer.add_scalar(f"Fold_{fold_idx}/ACC/valid_argmax", val_acc_argmax, epoch)
+        writer.add_scalar(f"Fold_{fold_idx}/ACC/valid_thresholded", val_acc_thresholded, epoch)
         writer.add_scalar(f"Fold_{fold_idx}/F1/train", train_f1, epoch)
         writer.add_scalar(f"Fold_{fold_idx}/F1/valid_argmax", val_f1_argmax, epoch)
         writer.add_scalar(f"Fold_{fold_idx}/F1/valid_thresholded", val_f1_thresholded, epoch)
+        writer.add_scalar(f"Fold_{fold_idx}/LR", current_lr, epoch)
 
         if not np.isnan(train_auc):
             writer.add_scalar(f"Fold_{fold_idx}/AUC/train", train_auc, epoch)
         if not np.isnan(val_auc):
-            writer.add_scalar(f"Fold_{fold_idx}/AUC/valid_argmax", val_auc, epoch)
-            writer.add_scalar(f"Fold_{fold_idx}/AUC/valid_thresholded", val_auc_thresholded, epoch)
-
-        writer.add_scalar(f"Fold_{fold_idx}/LR", current_lr, epoch)
+            writer.add_scalar(f"Fold_{fold_idx}/AUC/valid", val_auc, epoch)
 
         for class_idx in range(num_classes):
             writer.add_scalar(
@@ -363,19 +327,17 @@ for fold_idx, (train_idx, valid_idx) in enumerate(skf.split(np.arange(len(labels
             f"F1: {train_f1:.4f}, AUC: {train_auc:.4f}" if not np.isnan(train_auc)
             else f"Train -> Loss: {train_loss:.4f}, ACC: {train_acc:.4f}, F1: {train_f1:.4f}, AUC: nan"
         )
-
         print(
             f"Val(argmax) -> Loss: {val_loss:.4f}, ACC: {val_acc_argmax:.4f}, "
             f"F1: {val_f1_argmax:.4f}, AUC: {val_auc:.4f}" if not np.isnan(val_auc)
             else f"Val(argmax) -> Loss: {val_loss:.4f}, ACC: {val_acc_argmax:.4f}, F1: {val_f1_argmax:.4f}, AUC: nan"
         )
-
         print(
             f"Val(thresholded) -> ACC: {val_acc_thresholded:.4f}, "
-            f"F1: {val_f1_thresholded:.4f}, AUC: {val_auc_thresholded:.4f}" if not np.isnan(val_auc_thresholded)
+            f"F1: {val_f1_thresholded:.4f}, AUC: {val_auc:.4f}" if not np.isnan(val_auc)
             else f"Val(thresholded) -> ACC: {val_acc_thresholded:.4f}, F1: {val_f1_thresholded:.4f}, AUC: nan"
         )
-        print(f"Best thresholds this epoch: {threshold_tensor.tolist()}")
+        print(f"Thresholds: {threshold_tensor.tolist()}")
 
         scheduler.step(val_f1_thresholded)
 
@@ -385,37 +347,22 @@ for fold_idx, (train_idx, valid_idx) in enumerate(skf.split(np.arange(len(labels
             early_stop_counter = 0
 
             torch.save(model.state_dict(), fold_model_path)
-            torch.save(best_thresholds, fold_thresholds_pt_path)
-
-            with open(fold_thresholds_json_path, "w", encoding="utf-8") as f:
-                json.dump(
-                    {
-                        "fold": fold_idx,
-                        "best_val_f1_thresholded": best_val_f1_thresholded,
-                        "thresholds": [round(x, 4) for x in best_thresholds.tolist()]
-                    },
-                    f,
-                    indent=2
-                )
-
-            print("Improvement detected. Model saved.")
-
+            torch.save(best_thresholds, fold_threshold_path)
+            print("Improvement detected. Saved best fold model.")
         else:
             early_stop_counter += 1
             print(f"No improvement ({early_stop_counter}/{patience})")
 
             if early_stop_counter >= patience:
-                print("\nEarly stopping triggered!")
+                print("Early stopping triggered.")
                 break
 
-    # =========================
-    # Final fold evaluation with best saved model
-    # =========================
+    # evaluate best saved model on this fold
     model_best = ECGEfficientNet(num_classes=num_classes).to(device)
     model_best.load_state_dict(torch.load(fold_model_path, map_location=device))
     model_best.eval()
 
-    best_thresholds = torch.load(fold_thresholds_pt_path, map_location="cpu")
+    best_thresholds = torch.load(fold_threshold_path, map_location="cpu")
 
     fold_val_loss, fold_val_y_preds, fold_val_y_trues, fold_val_logits = evaluate(
         valid_dl, model_best, loss_fn, device, return_logits=True
@@ -428,9 +375,7 @@ for fold_idx, (train_idx, valid_idx) in enumerate(skf.split(np.arange(len(labels
     fold_val_f1_argmax = multiclass_f1_score(
         fold_val_y_preds, fold_val_y_trues, num_classes=num_classes, average="macro"
     ).item()
-    fold_val_auc = safe_multiclass_auc(
-        fold_val_y_trues, fold_val_probs, num_classes=num_classes
-    )
+    fold_val_auc = safe_multiclass_auc(fold_val_y_trues, fold_val_probs, num_classes=num_classes)
 
     fold_val_y_preds_thresholded = apply_class_thresholds(fold_val_probs, best_thresholds)
     fold_val_acc_thresholded = multiclass_accuracy(
@@ -468,7 +413,7 @@ writer.close()
 
 
 # =========================
-# Cross-validation summary
+# Summary
 # =========================
 acc_argmax_values = [x["acc_argmax"] for x in fold_results]
 f1_argmax_values = [x["f1_argmax"] for x in fold_results]
@@ -491,6 +436,7 @@ if len(auc_values) > 0:
     auc_mean, auc_std = summarize_metric(auc_values)
     print(f"AUC               : {auc_mean:.4f} ± {auc_std:.4f}")
 else:
+    auc_mean, auc_std = float("nan"), float("nan")
     print("AUC               : nan")
 
 print(f"ACC (thresholded) : {acc_thresholded_mean:.4f} ± {acc_thresholded_std:.4f}")
@@ -500,37 +446,32 @@ print(f"Best fold F1      : {best_fold_f1:.4f}")
 print(f"Best thresholds   : {best_fold_thresholds.tolist() if best_fold_thresholds is not None else None}")
 
 with open("kfold_results.json", "w", encoding="utf-8") as f:
-    json.dump(
-        {
-            "num_folds": num_folds,
-            "acc_argmax_mean": round(acc_argmax_mean, 4),
-            "acc_argmax_std": round(acc_argmax_std, 4),
-            "f1_argmax_mean": round(f1_argmax_mean, 4),
-            "f1_argmax_std": round(f1_argmax_std, 4),
-            "auc_mean": round(auc_mean, 4) if len(auc_values) > 0 else None,
-            "auc_std": round(auc_std, 4) if len(auc_values) > 0 else None,
-            "acc_thresholded_mean": round(acc_thresholded_mean, 4),
-            "acc_thresholded_std": round(acc_thresholded_std, 4),
-            "f1_thresholded_mean": round(f1_thresholded_mean, 4),
-            "f1_thresholded_std": round(f1_thresholded_std, 4),
-            "best_fold_idx": best_fold_idx,
-            "best_fold_f1": round(best_fold_f1, 4),
-            "best_fold_thresholds": [round(x, 4) for x in best_fold_thresholds.tolist()] if best_fold_thresholds is not None else None,
-            "fold_results": fold_results
-        },
-        f,
-        indent=2
-    )
+    json.dump({
+        "num_folds": num_folds,
+        "acc_argmax_mean": round(acc_argmax_mean, 4),
+        "acc_argmax_std": round(acc_argmax_std, 4),
+        "f1_argmax_mean": round(f1_argmax_mean, 4),
+        "f1_argmax_std": round(f1_argmax_std, 4),
+        "auc_mean": None if np.isnan(auc_mean) else round(auc_mean, 4),
+        "auc_std": None if np.isnan(auc_std) else round(auc_std, 4),
+        "acc_thresholded_mean": round(acc_thresholded_mean, 4),
+        "acc_thresholded_std": round(acc_thresholded_std, 4),
+        "f1_thresholded_mean": round(f1_thresholded_mean, 4),
+        "f1_thresholded_std": round(f1_thresholded_std, 4),
+        "best_fold_idx": best_fold_idx,
+        "best_fold_f1": round(best_fold_f1, 4),
+        "best_fold_thresholds": [round(x, 4) for x in best_fold_thresholds.tolist()] if best_fold_thresholds is not None else None,
+        "fold_results": fold_results
+    }, f, indent=2)
 
 
 # =========================
-# Optional inference on external unlabeled test images
-# Uses the best fold model
+# Optional inference on external hidden test images
 # =========================
 test_image_dir = "data/test_image"
 
 if best_model_path is not None and os.path.exists(test_image_dir):
-    print("\nRunning inference on external test images using best fold model...")
+    print("\nRunning inference on test_image using best fold model...")
 
     model_best = ECGEfficientNet(num_classes=num_classes).to(device)
     model_best.load_state_dict(torch.load(best_model_path, map_location=device))
@@ -565,7 +506,6 @@ if best_model_path is not None and os.path.exists(test_image_dir):
 
     submission_df = pd.DataFrame(predictions).sort_values("HN")
     submission_df.to_csv("submission.csv", index=False)
-
-    print(f"Created 'submission.csv' with {len(submission_df)} predictions.")
+    print(f"Created submission.csv with {len(submission_df)} predictions.")
 else:
-    print("\nSkip external test inference: best model not found or test_image folder not found.")
+    print("\nSkip external inference: best model or test_image folder not found.")

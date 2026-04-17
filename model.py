@@ -4,10 +4,6 @@ from torchvision import models
 
 
 class ECGEfficientNet(nn.Module):
-    """
-    EfficientNet-B0 fine-tuned for 5-class CAC score classification
-    from ECG PNG images.
-    """
     def __init__(self, num_classes=5, dropout=0.4):
         super().__init__()
 
@@ -15,11 +11,11 @@ class ECGEfficientNet(nn.Module):
             weights=models.EfficientNet_B0_Weights.DEFAULT
         )
 
-        # Freeze early layers, fine-tune later features + classifier
+        # freeze all feature layers first
         for param in backbone.features.parameters():
             param.requires_grad = False
 
-        # Unfreeze last 2 feature blocks
+        # unfreeze last 2 blocks
         for block in backbone.features[-2:]:
             for param in block.parameters():
                 param.requires_grad = True
