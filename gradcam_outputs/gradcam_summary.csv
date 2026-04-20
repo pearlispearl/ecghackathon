@@ -1,0 +1,9 @@
+filename,predicted_class,confidence,saved_path
+3275832_24022017.png,1,0.275065,gradcam_outputs\gradcam_3275832_24022017.png
+3427648_07052018.png,0,0.29203,gradcam_outputs\gradcam_3427648_07052018.png
+3891296_16112013.png,4,0.287871,gradcam_outputs\gradcam_3891296_16112013.png
+4034099_16122015.png,0,0.242339,gradcam_outputs\gradcam_4034099_16122015.png
+4058264_21042014.png,2,0.249073,gradcam_outputs\gradcam_4058264_21042014.png
+4070811_25122013.png,4,0.354785,gradcam_outputs\gradcam_4070811_25122013.png
+4086208_01092018.png,4,0.262507,gradcam_outputs\gradcam_4086208_01092018.png
+4087798_14122013.png,4,0.303532,gradcam_outputs\gradcam_4087798_14122013.png
