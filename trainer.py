@@ -17,7 +17,9 @@ from torcheval.metrics.functional import (
 from PIL import Image
 from ecg_image_dataset import ECGImageDataset 
 from dl_utils import train_one_epoch, test
-
+from wave_loader import load_waveforms
+from wave_image_dataset import ECGWaveToImageDataset
+from torch.utils.data import ConcatDataset
 
 
 # Hyperparameters
@@ -39,9 +41,17 @@ transform = transforms_v2.Compose([
 df1 = pd.read_csv(csv_file_path1)
 df2 = pd.read_csv(csv_file_path2)
 df_full = pd.concat([df1, df2], ignore_index=True)
-full_dataset = ECGImageDataset(df_full, image_dir_path, transform=transform)
-print(full_dataset.df['label'].value_counts())
+wave_dict = load_waveforms("data/matched_cta_ecg_waves.tsv")
+summary_df = pd.read_excel("data/matched_summary.xlsx")
+image_dataset = ECGImageDataset(df_full, image_dir_path, transform=transform)
 
+wave_dataset = ECGWaveToImageDataset(
+    summary_df,
+    wave_dict,
+    transform=transform
+)
+
+full_dataset = ConcatDataset([image_dataset, wave_dataset])
 
 train_size = int(0.8 * len(full_dataset))
 val_size = len(full_dataset) - train_size
